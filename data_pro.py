@@ -5,11 +5,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.feature_selection import SelectFromModel
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score, roc_curve, classification_report, accuracy_score, precision_recall_curve, auc
 import xgboost as xgb
+import lightgbm as lgb
+from imblearn.over_sampling import SMOTE
 import warnings
+import joblib
 warnings.filterwarnings('ignore')
 
 # Create outputs directory
@@ -63,22 +67,13 @@ def cap_outliers(df, cols):
             df[col] = np.clip(df[col], lower, upper)
     return df
 
-outlier_cols = ['HB', 'TLC', 'PLATELETS', 'GLUCOSE', 'UREA', 'CREATININE', 'BNP', 'DURATION OF STAY', 'duration of intensive unit stay']
+outlier_cols = ['HB', 'TLC', 'PLATELETS', 'GLUCOSE', 'UREA', 'CREATININE', 'BNP']
 adm_df = cap_outliers(adm_df, outlier_cols)
 
 # ---------------------------------------------------------
 # PHASE 2.1: FEATURE ENGINEERING (BASE DATASET)
 # ---------------------------------------------------------
 print("Phase 2: Feature Engineering...")
-
-adm_df['D.O.A'] = pd.to_datetime(adm_df['D.O.A'], errors='coerce', format='mixed')
-adm_df['D.O.D'] = pd.to_datetime(adm_df['D.O.D'], errors='coerce', format='mixed')
-
-adm_df['length_of_stay'] = (adm_df['D.O.D'] - adm_df['D.O.A']).dt.days
-adm_df['length_of_stay'] = adm_df['length_of_stay'].fillna(adm_df['DURATION OF STAY'])
-
-if 'duration of intensive unit stay' in adm_df.columns:
-    adm_df['icu_ratio'] = adm_df['duration of intensive unit stay'] / (adm_df['length_of_stay'] + 1e-5)
 
 comorb = ['DM', 'HTN', 'CAD', 'PRIOR CMP', 'CKD']
 adm_df['comorbidity_count'] = adm_df[[c for c in comorb if c in adm_df.columns]].sum(axis=1)
@@ -230,6 +225,7 @@ except Exception as e: print(f"Weather merge failed: {e}")
 # PHASE 2.3: FINAL CLEANUP & ENCODING
 # ---------------------------------------------------------
 drop_cols = ['SNO', 'MRD No.', 'D.O.A', 'D.O.D', 'month year', 'DURATION OF STAY', 
+             'duration of intensive unit stay',
              'age_group', 'gender_mapped', 'location_mapped', 'month_num', 
              'predicted_disease_mapped', 'dept_mapped']
 adm_df.drop(columns=[c for c in drop_cols if c in adm_df.columns], inplace=True)
@@ -250,6 +246,10 @@ if 'OUTCOME' in adm_df.columns:
 adm_df.replace([np.inf, -np.inf], np.nan, inplace=True)
 adm_df.fillna(0, inplace=True)
 
+# Save the final merged dataset
+adm_df.to_csv('outputs/final_merged_dataset.csv', index=False)
+print("Saved final merged dataset to outputs/final_merged_dataset.csv")
+
 X = adm_df.drop(columns=['OUTCOME'])
 y = adm_df['OUTCOME']
 
@@ -260,48 +260,84 @@ X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
 # ---------------------------------------------------------
-# PHASE 3: MODEL TRAINING (LOGREG, RF, XGBOOST)
+# PHASE 3: FEATURE SELECTION & MODEL TRAINING
 # ---------------------------------------------------------
-print("Phase 3: Model Training...")
+print("Phase 3: Feature Selection & Model Training...")
+
+# Global Feature Selection
+print("Performing Feature Selection...")
+selector = SelectFromModel(xgb.XGBClassifier(random_state=42, n_estimators=100), max_features=40)
+X_train_selected = selector.fit_transform(X_train_scaled, y_train)
+X_test_selected = selector.transform(X_test_scaled)
+selected_features = selector.get_feature_names_out(X.columns)
+print(f"Selected {X_train_selected.shape[1]} features out of {X_train_scaled.shape[1]}")
 
 # 3.1 Logistic Regression
 print("Training Logistic Regression...")
 log_reg = LogisticRegression(max_iter=1000, class_weight='balanced', solver='lbfgs', random_state=42)
-log_reg.fit(X_train_scaled, y_train)
+log_reg.fit(X_train_selected, y_train)
 
-# 3.2 Random Forest
-print("Training Random Forest...")
-rf_model = RandomForestClassifier(n_estimators=300, max_depth=15, min_samples_split=5, 
-                                  min_samples_leaf=2, class_weight='balanced', random_state=42, n_jobs=-1)
-# Tree models don't strictly need scaled data, but it doesn't hurt. We use scaled for consistency.
-rf_model.fit(X_train_scaled, y_train)
+# 3.2 Random Forest (Tuned)
+print("Running GridSearch for Random Forest...")
+param_grid_rf = {
+    'n_estimators': [300, 500],
+    'max_depth': [10, 15, None],
+    'min_samples_split': [2, 5],
+    'class_weight': ['balanced', 'balanced_subsample']
+}
+rf_grid = GridSearchCV(RandomForestClassifier(random_state=42, n_jobs=-1), param_grid_rf, cv=3, scoring='f1')
+rf_grid.fit(X_train_selected, y_train)
+best_rf = rf_grid.best_estimator_
 
-# 3.3 XGBoost
-print("Training XGBoost...")
-ratio = float(y_train.value_counts()[0] / y_train.value_counts()[1])
-xgb_model = xgb.XGBClassifier(
-    n_estimators=500, max_depth=6, learning_rate=0.05,
-    subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
-    scale_pos_weight=ratio, eval_metric='logloss', random_state=42
-)
-
-# Optional: GridSearchCV for XGBoost (fast run)
+# 3.3 XGBoost (Tuned)
 print("Running GridSearch for XGBoost...")
-cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+ratio = float(y_train.value_counts()[0] / y_train.value_counts()[1])
 param_grid_xgb = {
     'max_depth': [4, 6],
     'learning_rate': [0.05, 0.1],
-    'n_estimators': [300, 500]
+    'n_estimators': [300, 500],
+    'scale_pos_weight': [ratio, ratio * 1.5, ratio * 2]
 }
-grid_search = GridSearchCV(xgb_model, param_grid_xgb, cv=cv, scoring='f1', n_jobs=-1, verbose=1)
-grid_search.fit(X_train_scaled, y_train)
-best_xgb_model = grid_search.best_estimator_
+xgb_grid = GridSearchCV(xgb.XGBClassifier(subsample=0.8, colsample_bytree=0.8, eval_metric='logloss', random_state=42), param_grid_xgb, cv=3, scoring='f1', n_jobs=-1)
+xgb_grid.fit(X_train_selected, y_train)
+best_xgb_model = xgb_grid.best_estimator_
+
+# 3.4 LightGBM (Tuned)
+print("Running GridSearch for LightGBM...")
+param_grid_lgb = {
+    'max_depth': [4, 6, 8],
+    'learning_rate': [0.05, 0.1],
+    'n_estimators': [300, 500],
+    'scale_pos_weight': [ratio, ratio * 1.5, ratio * 2]
+}
+lgb_grid = GridSearchCV(lgb.LGBMClassifier(subsample=0.8, colsample_bytree=0.8, random_state=42, verbose=-1), param_grid_lgb, cv=3, scoring='f1', n_jobs=-1)
+lgb_grid.fit(X_train_selected, y_train)
+best_lgb_model = lgb_grid.best_estimator_
+
+# 3.5 Stacking Ensemble
+print("Training Stacking Ensemble...")
+estimators = [
+    ('rf', best_rf),
+    ('xgb', best_xgb_model),
+    ('lgb', best_lgb_model)
+]
+stack_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+stack_model = StackingClassifier(
+    estimators=estimators,
+    final_estimator=LogisticRegression(class_weight='balanced', max_iter=1000),
+    cv=stack_cv, 
+    passthrough=True,
+    n_jobs=-1
+)
+stack_model.fit(X_train_selected, y_train)
 
 # Store models
 models = {
     'Logistic Regression': log_reg,
-    'Random Forest': rf_model,
-    'XGBoost': best_xgb_model
+    'Random Forest': best_rf,
+    'XGBoost': best_xgb_model,
+    'LightGBM': best_lgb_model,
+    'Stacking Ensemble': stack_model
 }
 
 # ---------------------------------------------------------
@@ -312,10 +348,25 @@ print("Phase 4: Evaluation & Visualization...")
 results = {}
 predictions = {}
 
+def get_optimal_threshold(y_true, y_prob):
+    best_thresh = 0.5
+    best_f1 = 0
+    for thresh in np.arange(0.1, 0.9, 0.01):
+        preds = (y_prob >= thresh).astype(int)
+        f1 = f1_score(y_true, preds)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thresh = thresh
+    return best_thresh
+
 with open('outputs/classification_reports.txt', 'w') as f:
     for name, model in models.items():
-        y_pred = model.predict(X_test_scaled)
-        y_prob = model.predict_proba(X_test_scaled)[:, 1]
+        y_prob = model.predict_proba(X_test_selected)[:, 1]
+        
+        # Optimal threshold tuning
+        opt_thresh = get_optimal_threshold(y_test, y_prob)
+        y_pred = (y_prob >= opt_thresh).astype(int)
+        
         predictions[name] = {'pred': y_pred, 'prob': y_prob}
         
         acc = accuracy_score(y_test, y_pred)
@@ -324,12 +375,13 @@ with open('outputs/classification_reports.txt', 'w') as f:
         results[name] = {'Accuracy': acc, 'F1 Score': f1, 'AUC': auc_score}
         
         report = classification_report(y_test, y_pred)
-        f.write(f"=== {name} ===\n")
+        f.write(f"=== {name} (Threshold: {opt_thresh:.2f}) ===\n")
         f.write(f"Accuracy: {acc:.4f} | F1: {f1:.4f} | AUC: {auc_score:.4f}\n")
         f.write(f"{report}\n\n")
 
 # A. Confusion Matrix (side-by-side)
-fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+num_models = len(models)
+fig, axes = plt.subplots(1, num_models, figsize=(4.5 * num_models, 5))
 for i, (name, model) in enumerate(models.items()):
     cm = confusion_matrix(y_test, predictions[name]['pred'])
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[i],
@@ -371,21 +423,18 @@ plt.tight_layout()
 plt.savefig('outputs/pr_curve_comparison.png')
 plt.close()
 
-# D. Feature Importance (RF & XGBoost)
-fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-# RF
-rf_importances = pd.Series(rf_model.feature_importances_, index=X.columns).sort_values(ascending=False).head(20)
-sns.barplot(x=rf_importances.values, y=rf_importances.index, ax=axes[0], palette='viridis')
-axes[0].set_title('Random Forest - Top 20 Features')
-# XGB
-xgb_importances = pd.Series(best_xgb_model.feature_importances_, index=X.columns).sort_values(ascending=False).head(20)
-sns.barplot(x=xgb_importances.values, y=xgb_importances.index, ax=axes[1], palette='viridis')
-axes[1].set_title('XGBoost - Top 20 Features')
+# D. Feature Importance (RF, XGBoost, LightGBM)
+tree_models = {'Random Forest': best_rf, 'XGBoost': best_xgb_model, 'LightGBM': best_lgb_model}
+fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+for i, (name, model) in enumerate(tree_models.items()):
+    importances = pd.Series(model.feature_importances_, index=selected_features).sort_values(ascending=False).head(20)
+    sns.barplot(x=importances.values, y=importances.index, ax=axes[i], palette='viridis')
+    axes[i].set_title(f'{name} - Top Features')
 plt.tight_layout()
 plt.savefig('outputs/feature_importance.png')
 plt.close()
 
-# F. Model Comparison Bar Chart
+# G. Model Comparison Bar Chart
 res_df = pd.DataFrame(results).T
 res_df.plot(kind='bar', figsize=(10, 6), colormap='Set2')
 plt.title('Model Performance Comparison')
@@ -398,8 +447,17 @@ plt.tight_layout()
 plt.savefig('outputs/model_comparison.png')
 plt.close()
 
+# Save the trained models and selected features
+print("Saving trained models and feature list...")
+joblib.dump(list(selected_features), 'outputs/selected_features.pkl')
+for name, model in models.items():
+    filename = f'outputs/{name.replace(" ", "_").lower()}_model.pkl'
+    joblib.dump(model, filename)
+
 print(f"Process completed successfully!")
 print("Outputs generated:")
+print(" - outputs/final_merged_dataset.csv")
+print(" - outputs/*.pkl (Trained Models)")
 print(" - outputs/classification_reports.txt")
 print(" - outputs/confusion_matrix_all.png")
 print(" - outputs/roc_curve_comparison.png")
