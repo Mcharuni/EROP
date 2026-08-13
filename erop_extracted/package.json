@@ -1,0 +1,37 @@
+{
+  "name": "erop-clinical-intelligence",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite\" \".\\venv\\Scripts\\python -m uvicorn backend:app --host 127.0.0.1 --port 8000\"",
+    "build": "vite build",
+    "start": "concurrently \"vite preview\" \".\\venv\\Scripts\\python -m uvicorn backend:app --host 127.0.0.1 --port 8000\"",
+    "lint": "echo 'JavaScript validation bypass'"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "lucide-react": "^0.400.0",
+    "motion": "^11.11.13",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0-alpha.18",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^10.0.4",
+    "esbuild": "^0.21.5",
+    "tailwindcss": "^4.0.0-alpha.18",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.2",
+    "vite": "^5.3.1"
+  }
+}

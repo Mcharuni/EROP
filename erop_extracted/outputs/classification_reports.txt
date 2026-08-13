@@ -1,0 +1,60 @@
+=== Logistic Regression (Threshold: 0.78) ===
+Accuracy: 0.9471 | F1: 0.6324 | AUC: 0.9167
+              precision    recall  f1-score   support
+
+           0       0.97      0.97      0.97       874
+           1       0.66      0.61      0.63        71
+
+    accuracy                           0.95       945
+   macro avg       0.81      0.79      0.80       945
+weighted avg       0.95      0.95      0.95       945
+
+
+=== Random Forest (Threshold: 0.56) ===
+Accuracy: 0.9661 | F1: 0.7333 | AUC: 0.9683
+              precision    recall  f1-score   support
+
+           0       0.97      0.99      0.98       874
+           1       0.90      0.62      0.73        71
+
+    accuracy                           0.97       945
+   macro avg       0.93      0.81      0.86       945
+weighted avg       0.96      0.97      0.96       945
+
+
+=== XGBoost (Threshold: 0.42) ===
+Accuracy: 0.9630 | F1: 0.7482 | AUC: 0.9619
+              precision    recall  f1-score   support
+
+           0       0.98      0.98      0.98       874
+           1       0.76      0.73      0.75        71
+
+    accuracy                           0.96       945
+   macro avg       0.87      0.86      0.86       945
+weighted avg       0.96      0.96      0.96       945
+
+
+=== LightGBM (Threshold: 0.29) ===
+Accuracy: 0.9492 | F1: 0.7108 | AUC: 0.9712
+              precision    recall  f1-score   support
+
+           0       0.99      0.96      0.97       874
+           1       0.62      0.83      0.71        71
+
+    accuracy                           0.95       945
+   macro avg       0.80      0.89      0.84       945
+weighted avg       0.96      0.95      0.95       945
+
+
+=== Stacking Ensemble (Threshold: 0.87) ===
+Accuracy: 0.9630 | F1: 0.7244 | AUC: 0.9625
+              precision    recall  f1-score   support
+
+           0       0.97      0.99      0.98       874
+           1       0.82      0.65      0.72        71
+
+    accuracy                           0.96       945
+   macro avg       0.90      0.82      0.85       945
+weighted avg       0.96      0.96      0.96       945
+
+

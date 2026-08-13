@@ -1,0 +1,6 @@
+{
+  "name": "EROP Clinical Intelligence",
+  "description": "Patient mortality risk assessment and predictive analytics powered by clinical AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

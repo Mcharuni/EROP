@@ -1,0 +1,7 @@
+node_modules/
+venv/
+__pycache__/
+*.pyc
+.env
+erop_extracted/node_modules/
+erop_extracted/venv/
